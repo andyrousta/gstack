@@ -763,23 +763,41 @@ function gbrainPutPage(page: PageRecord): { ok: boolean; error?: string } {
   if (!gbrainAvailable()) {
     return { ok: false, error: "gbrain CLI not in PATH" };
   }
+  // gbrain CLI verb is `put <slug>`; it does NOT accept --title / --type /
+  // --tags flags. (`put_page` is the MCP tool name, not the CLI subcommand.)
+  // Inject title/type/tags into the YAML frontmatter that page.body already
+  // begins with so gbrain's frontmatter parser picks them up.
+  let body = page.body;
+  if (body.startsWith("---\n")) {
+    const end = body.indexOf("\n---\n", 4);
+    if (end > 0) {
+      const inject = [
+        `title: ${JSON.stringify(page.title)}`,
+        `type: ${page.type}`,
+        `tags:`,
+        ...page.tags.map((t) => `  - ${t}`),
+      ].join("\n");
+      body = body.slice(0, end) + "\n" + inject + body.slice(end);
+    }
+  }
   try {
-    const args = [
-      "put_page",
-      "--slug", page.slug,
-      "--title", page.title,
-      "--type", page.type,
-      "--tags", page.tags.join(","),
-    ];
-    execFileSync("gbrain", args, {
-      input: page.body,
+    execFileSync("gbrain", ["put", page.slug], {
+      input: body,
       encoding: "utf-8",
-      timeout: 30000,
+      // Bumped from 30s: auto-link reconciliation on dense transcripts hits
+      // 30s once the brain has a few hundred existing pages.
+      timeout: 60000,
+      // Bumped from default 1MB: without this, gbrain's actual stderr gets
+      // truncated and callers see only "Command failed:" with no detail.
+      maxBuffer: 16 * 1024 * 1024,
       stdio: ["pipe", "pipe", "pipe"],
     });
     return { ok: true };
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  } catch (err: any) {
+    const stderr = err?.stderr?.toString?.() ?? "";
+    const stdout = err?.stdout?.toString?.() ?? "";
+    const detail = stderr || stdout || (err instanceof Error ? err.message : String(err));
+    return { ok: false, error: detail.split("\n")[0].slice(0, 300) };
   }
 }
 
