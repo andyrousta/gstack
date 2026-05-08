@@ -40,10 +40,17 @@ describeE2E('plan-design-review plan-mode smoke (gate)', () => {
 
   // v1.21+ regression: see skill-e2e-plan-ceo-plan-mode.test.ts for the
   // contract. plan-design-review legitimately short-circuits on no-UI-scope
-  // branches, so this case keeps the same ['asked', 'plan_ready'] envelope
-  // as the baseline. The discriminating regression signals are
-  // 'auto_decided' (AUTO_DECIDE preamble fired upstream) or any failure
-  // outcome — both mean the user never saw a question they should have.
+  // branches, so this case has historically used a looser envelope.
+  //
+  // Post-v1.28 (forever-war fix), 'exited' is acceptable when BLOCKED is
+  // visible in the TTY (model correctly recognized the AUQ-unavailable
+  // failure mode and stopped). The legacy 'plan_ready' (with or without
+  // decisions section) and 'asked' paths remain valid pass outcomes.
+  //
+  // The discriminating regression signals are 'auto_decided' (AUTO_DECIDE
+  // preamble fired upstream), 'silent_write', 'timeout', or 'exited'
+  // without BLOCKED visible — all mean the user never saw a question they
+  // should have.
   test('does not silently auto-decide when --disallowedTools AskUserQuestion is set', async () => {
     const obs = await runPlanSkillObservation({
       skillName: 'plan-design-review',
@@ -52,10 +59,11 @@ describeE2E('plan-design-review plan-mode smoke (gate)', () => {
       timeoutMs: 300_000,
     });
 
+    const blockedVisible = /BLOCKED\s*[—-]\s*AskUserQuestion/i.test(obs.evidence);
+
     if (
       obs.outcome === 'auto_decided' ||
       obs.outcome === 'silent_write' ||
-      obs.outcome === 'exited' ||
       obs.outcome === 'timeout'
     ) {
       throw new Error(
@@ -65,13 +73,13 @@ describeE2E('plan-design-review plan-mode smoke (gate)', () => {
           `--- evidence (last 2KB visible) ---\n${obs.evidence}`,
       );
     }
-    // plan-design-review legitimately short-circuits to plan_ready on no-UI
-    // branches. Allow plan_ready WITHOUT a decisions section ONLY if the
-    // plan file genuinely has no UI scope (we don't have a deterministic way
-    // to check this from the test, so this skill keeps the looser envelope).
-    // Other plan-mode skills require the decisions section under
-    // --disallowedTools; design is the special case.
-    expect(['asked', 'plan_ready']).toContain(obs.outcome);
+    if (obs.outcome === 'exited' && !blockedVisible) {
+      throw new Error(
+        `plan-design-review AskUserQuestion-blocked regression: outcome=exited without BLOCKED — AskUserQuestion string in TTY. Model quit silently instead of surfacing the failure mode.\n` +
+          `--- evidence (last 2KB visible) ---\n${obs.evidence}`,
+      );
+    }
+    expect(['asked', 'plan_ready', 'exited']).toContain(obs.outcome);
     assertReportAtBottomIfPlanWritten(obs);
   }, 360_000);
 });

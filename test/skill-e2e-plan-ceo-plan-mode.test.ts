@@ -81,19 +81,26 @@ describeE2E('plan-ceo-review plan-mode smoke (gate)', () => {
   // is removed from the model's tool registry; without fallback guidance
   // the model can't ask and silently proceeds.
   //
-  // The fix (Tool resolution preamble) accepts two surface paths under
-  // --disallowedTools:
-  //   - 'asked'      — model emits a numbered-option prompt as prose (with
-  //                     the same D<N> + Pros/cons format as a real AUQ)
-  //   - 'plan_ready' — model writes the question into the plan file as a
-  //                     "## Decisions to confirm" section + ExitPlanMode;
-  //                     the native plan-mode "Ready to execute?" surfaces
-  //                     it through the TTY confirmation
+  // After v1.28+ (forever-war fix), the preamble fallback that wrote a
+  // "## Decisions to confirm" section was deleted in favor of a hard
+  // BLOCKED rule. The pass envelope under --disallowedTools accepts:
+  //   - 'asked'      — model emits a numbered-option prompt as prose
+  //   - 'plan_ready' WITH (## Decisions section [legacy]
+  //                  OR BLOCKED string visible [post-fix])
+  //   - 'exited'     WITH BLOCKED string visible [post-fix]
   //
-  // Both let the user see the decision. Failure signals are
-  // silent_write/exited/timeout (model never surfaced the question) and
-  // 'auto_decided' (the AUTO_DECIDE preamble fired without a /plan-tune
-  // opt-in — caught explicitly).
+  // The legacy `## Decisions` path stays in the envelope so this test
+  // keeps passing during the migration window when the fallback delete
+  // and resolver edits land in the same PR but mid-rebase states are
+  // possible. Once the deletion has been on main long enough that the
+  // generated SKILL.md cache has flushed, the legacy branch can be
+  // removed in a follow-up.
+  //
+  // Failure signals (regression we DO want to catch):
+  //   - 'auto_decided' — AUTO_DECIDE preamble fired without /plan-tune opt-in
+  //   - 'silent_write' — Write/Edit before any AUQ surface
+  //   - 'timeout'      — neither asked nor terminated in budget
+  //   - 'plan_ready' or 'exited' WITHOUT either Decisions section or BLOCKED
   test('AskUserQuestion surfaces when --disallowedTools AskUserQuestion is set', async () => {
     const obs = await runPlanSkillObservation({
       skillName: 'plan-ceo-review',
@@ -102,10 +109,11 @@ describeE2E('plan-ceo-review plan-mode smoke (gate)', () => {
       timeoutMs: 300_000,
     });
 
+    const blockedVisible = /BLOCKED\s*[—-]\s*AskUserQuestion/i.test(obs.evidence);
+
     if (
       obs.outcome === 'auto_decided' ||
       obs.outcome === 'silent_write' ||
-      obs.outcome === 'exited' ||
       obs.outcome === 'timeout'
     ) {
       throw new Error(
@@ -115,25 +123,35 @@ describeE2E('plan-ceo-review plan-mode smoke (gate)', () => {
           `--- evidence (last 2KB visible) ---\n${obs.evidence}`,
       );
     }
-    // plan_ready under --disallowedTools is only a pass when the model used
-    // the plan-file fallback (wrote a `## Decisions to confirm` section).
-    // Without that section, plan_ready means the model silently skipped Step 0
-    // and went straight to ExitPlanMode — the regression we're catching.
-    if (obs.outcome === 'plan_ready') {
-      if (!obs.planFile) {
+    // 'exited' is acceptable ONLY when BLOCKED string is visible (post-fix
+    // path). Without BLOCKED, exited means the model crashed or quit silently.
+    if (obs.outcome === 'exited') {
+      if (!blockedVisible) {
         throw new Error(
-          `plan-ceo-review AskUserQuestion-blocked regression: outcome=plan_ready but no plan file path detected in TTY output. Cannot verify the model used the fallback flow.\n` +
-            `--- evidence (last 2KB visible) ---\n${obs.evidence}`,
-        );
-      }
-      if (!planFileHasDecisionsSection(obs.planFile)) {
-        throw new Error(
-          `plan-ceo-review AskUserQuestion-blocked regression: model wrote ${obs.planFile} without a "## Decisions" section. Step 0 was silently skipped.\n` +
+          `plan-ceo-review AskUserQuestion-blocked regression: outcome=exited without BLOCKED — AskUserQuestion string in TTY. Model quit silently instead of surfacing the failure mode.\n` +
             `--- evidence (last 2KB visible) ---\n${obs.evidence}`,
         );
       }
     }
-    expect(['asked', 'plan_ready']).toContain(obs.outcome);
+    // 'plan_ready' is acceptable when EITHER (legacy) the model wrote a
+    // "## Decisions to confirm" section OR (post-fix) BLOCKED is visible
+    // in the TTY. Neither = silent ExitPlanMode = the regression we catch.
+    if (obs.outcome === 'plan_ready') {
+      if (!obs.planFile) {
+        if (!blockedVisible) {
+          throw new Error(
+            `plan-ceo-review AskUserQuestion-blocked regression: outcome=plan_ready but no plan file path detected and no BLOCKED string in TTY. Cannot verify the model used either the legacy fallback or the post-fix BLOCKED path.\n` +
+              `--- evidence (last 2KB visible) ---\n${obs.evidence}`,
+          );
+        }
+      } else if (!planFileHasDecisionsSection(obs.planFile) && !blockedVisible) {
+        throw new Error(
+          `plan-ceo-review AskUserQuestion-blocked regression: model wrote ${obs.planFile} without a "## Decisions" section AND no BLOCKED string in TTY. Step 0 was silently skipped.\n` +
+            `--- evidence (last 2KB visible) ---\n${obs.evidence}`,
+        );
+      }
+    }
+    expect(['asked', 'plan_ready', 'exited']).toContain(obs.outcome);
     assertReportAtBottomIfPlanWritten(obs);
   }, 360_000);
 });

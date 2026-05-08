@@ -37,12 +37,17 @@ const shouldRun = !!process.env.EVALS && process.env.EVALS_TIER === 'gate';
 const describeE2E = shouldRun ? describe : describe.skip;
 
 describeE2E('autoplan AskUserQuestion-blocked smoke (gate)', () => {
-  // Pass envelope is ['asked', 'plan_ready']: model either renders the
-  // first non-auto-decided gate (Phase 1 premise confirmation) as numbered
-  // prose or surfaces it through the plan file + ExitPlanMode flow.
+  // Pass envelope: model either renders the first non-auto-decided gate
+  // (Phase 1 premise confirmation) as numbered prose ('asked'), surfaces
+  // it through the plan-file + ExitPlanMode flow ('plan_ready' with a
+  // "## Decisions" section [legacy fallback] OR with BLOCKED visible
+  // [post-v1.28 fix]), or terminates with the BLOCKED string visible
+  // ('exited' post-fix).
+  //
   // Autoplan auto-decides intermediate questions BY DESIGN; the failure
   // signal we care about is the AUTO_DECIDE preamble firing on a gate it
-  // shouldn't (caught explicitly via the 'auto_decided' outcome).
+  // shouldn't (caught explicitly via the 'auto_decided' outcome) or the
+  // model proceeding silently.
   test('a non-auto-decided gate surfaces when AskUserQuestion is --disallowedTools', async () => {
     const obs = await runPlanSkillObservation({
       skillName: 'autoplan',
@@ -51,10 +56,11 @@ describeE2E('autoplan AskUserQuestion-blocked smoke (gate)', () => {
       timeoutMs: 300_000,
     });
 
+    const blockedVisible = /BLOCKED\s*[—-]\s*AskUserQuestion/i.test(obs.evidence);
+
     if (
       obs.outcome === 'auto_decided' ||
       obs.outcome === 'silent_write' ||
-      obs.outcome === 'exited' ||
       obs.outcome === 'timeout'
     ) {
       throw new Error(
@@ -64,14 +70,21 @@ describeE2E('autoplan AskUserQuestion-blocked smoke (gate)', () => {
           `--- evidence (last 2KB visible) ---\n${obs.evidence}`,
       );
     }
+    if (obs.outcome === 'exited' && !blockedVisible) {
+      throw new Error(
+        `autoplan AskUserQuestion-blocked regression: outcome=exited without BLOCKED — AskUserQuestion string in TTY. Model quit silently instead of surfacing the failure mode.\n` +
+          `--- evidence (last 2KB visible) ---\n${obs.evidence}`,
+      );
+    }
     if (obs.outcome === 'plan_ready') {
-      if (!obs.planFile || !planFileHasDecisionsSection(obs.planFile)) {
+      const decisionsOk = obs.planFile && planFileHasDecisionsSection(obs.planFile);
+      if (!decisionsOk && !blockedVisible) {
         throw new Error(
-          `autoplan AskUserQuestion-blocked regression: plan_ready without a "## Decisions" section in ${obs.planFile ?? '<no plan file detected>'} — Phase 1 premise gate was silently skipped.\n` +
+          `autoplan AskUserQuestion-blocked regression: plan_ready without a "## Decisions" section in ${obs.planFile ?? '<no plan file detected>'} AND no BLOCKED string in TTY — Phase 1 premise gate was silently skipped.\n` +
             `--- evidence (last 2KB visible) ---\n${obs.evidence}`,
         );
       }
     }
-    expect(['asked', 'plan_ready']).toContain(obs.outcome);
+    expect(['asked', 'plan_ready', 'exited']).toContain(obs.outcome);
   }, 360_000);
 });
