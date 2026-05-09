@@ -1620,7 +1620,7 @@ async function start() {
           const stateContent = JSON.parse(fs.readFileSync(config.stateFile, 'utf-8'));
           stateContent.tunnel = { url: tunnelUrl, domain: domain || null, startedAt: new Date().toISOString() };
           const tmpState = tmpStatePath();
-          writeSecureFile(tmpState, JSON.stringify(stateContent, null, 2));
+          fs.writeFileSync(tmpState, JSON.stringify(stateContent, null, 2), { mode: 0o600 });
           fs.renameSync(tmpState, config.stateFile);
 
           return new Response(JSON.stringify({ url: tunnelUrl }), {
@@ -2150,7 +2150,7 @@ async function start() {
     ...(xvfb ? { xvfbPid: xvfb.pid, xvfbStartTime: xvfb.startTime, xvfbDisplay: xvfb.display } : {}),
   };
   const tmpFile = tmpStatePath();
-  writeSecureFile(tmpFile, JSON.stringify(state, null, 2));
+  fs.writeFileSync(tmpFile, JSON.stringify(state, null, 2), { mode: 0o600 });
   fs.renameSync(tmpFile, config.stateFile);
 
   browserManager.serverPort = port;
@@ -2231,7 +2231,7 @@ async function start() {
         const stateContent = JSON.parse(fs.readFileSync(config.stateFile, 'utf-8'));
         stateContent.tunnel = { url: tunnelUrl, domain: domain || null, startedAt: new Date().toISOString() };
         const tmpState = tmpStatePath();
-        writeSecureFile(tmpState, JSON.stringify(stateContent, null, 2));
+        fs.writeFileSync(tmpState, JSON.stringify(stateContent, null, 2), { mode: 0o600 });
         fs.renameSync(tmpState, config.stateFile);
       } catch (err: any) {
         console.error(`[browse] Failed to start tunnel: ${err.message}`);
@@ -2261,7 +2261,7 @@ async function start() {
       const stateContent = JSON.parse(fs.readFileSync(config.stateFile, 'utf-8'));
       stateContent.tunnelLocalPort = tunnelPort;
       const tmpState = tmpStatePath();
-      writeSecureFile(tmpState, JSON.stringify(stateContent, null, 2));
+      fs.writeFileSync(tmpState, JSON.stringify(stateContent, null, 2), { mode: 0o600 });
       fs.renameSync(tmpState, config.stateFile);
     } catch (err: any) {
       console.error(`[browse] BROWSE_TUNNEL_LOCAL_ONLY=1 listener bind failed: ${err.message}`);

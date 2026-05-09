@@ -1641,7 +1641,7 @@ Run `git diff origin/<base>...HEAD` and `git log origin/<base>..HEAD --oneline` 
 
 For each extracted plan item, run the verification dispatch from the previous section, then classify:
 
-- **DONE** — Clear evidence the item shipped. For DIFF-VERIFIABLE items: cite the specific file(s) changed in the diff. For CROSS-REPO items with a reachable sibling repo: cite the path that exists.
+- **DONE** — Clear evidence the item shipped. Cite the specific file(s) changed in the diff for DIFF-VERIFIABLE items, or the verified path that exists for CROSS-REPO items with a reachable sibling repo.
 - **PARTIAL** — Some work toward this item exists but is incomplete (e.g., model created but controller missing, function exists but edge cases not handled).
 - **NOT DONE** — Verification ran and produced negative evidence (file missing, code absent in diff, sibling-repo file confirmed absent).
 - **CHANGED** — The item was implemented using a different approach than the plan described, but the same goal is achieved. Note the difference.
