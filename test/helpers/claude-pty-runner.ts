@@ -1485,6 +1485,13 @@ export async function runPlanSkillObservation(opts: {
     const start = Date.now();
     let lastJudgeAt = 0;
     let lastJudgeVerdict: PtyStateVerdict | null = null;
+    // High-water marks: did we EVER see a prose-AUQ surface or a judge
+    // 'waiting' verdict during the run? Models may surface options
+    // briefly, then resume thinking when no user response comes (test
+    // env has no responder). At timeout we trust historical signals
+    // even if the current state is 'working'.
+    let proseAUQEverObserved = false;
+    let waitingEverObserved = false;
     const JUDGE_AFTER_MS = 60_000;
     const JUDGE_INTERVAL_MS = 30_000;
     while (Date.now() - start < budgetMs) {
@@ -1507,6 +1514,18 @@ export async function runPlanSkillObservation(opts: {
           elapsedMs: Date.now() - startedAt,
         };
       }
+
+      // Cheap surface-tracking: did the model ever surface a prose AUQ in
+      // this tick's recent buffer? Track once-true (high water).
+      if (!proseAUQEverObserved && isProseAUQVisible(visible)) {
+        proseAUQEverObserved = true;
+        logPtySnapshot(visible, {
+          testName: opts.skillName,
+          elapsedMs: Date.now() - start,
+          tag: 'prose-auq-surfaced',
+        });
+      }
+
       const classified = classifyVisible(visible, {
         strictPlanWrites: !!opts.initialPlanContent,
       });
@@ -1539,6 +1558,7 @@ export async function runPlanSkillObservation(opts: {
         logPtySnapshot(visible, { testName: opts.skillName, elapsedMs: elapsed, tag: 'judge-tick' });
         lastJudgeVerdict = judgePtyState(visible, { testName: opts.skillName });
         if (lastJudgeVerdict.state === 'waiting') {
+          waitingEverObserved = true;
           return {
             outcome: 'asked',
             summary: `LLM judge: ${lastJudgeVerdict.reasoning} (state=waiting after ${Math.round(elapsed / 1000)}s)`,
@@ -1549,6 +1569,24 @@ export async function runPlanSkillObservation(opts: {
       }
     }
 
+    // Timeout fallback: if we observed a prose-AUQ surface OR a judge
+    // 'waiting' verdict at any point during the run, treat as 'asked'.
+    // This catches the model-surfaced-then-resumed-thinking case where
+    // by the time the timeout fires, the buffer has moved past the
+    // options into spinner state but the question DID surface earlier.
+    const finalVisible = session.visibleSince(since);
+    if (proseAUQEverObserved || waitingEverObserved) {
+      return {
+        outcome: 'asked',
+        summary:
+          `prose-AUQ surface observed during run (proseAUQEverObserved=${proseAUQEverObserved}, waitingEverObserved=${waitingEverObserved}); model surfaced the question and the test budget elapsed without a follow-up classification` +
+          (lastJudgeVerdict
+            ? ` (last LLM judge: ${lastJudgeVerdict.state} — ${lastJudgeVerdict.reasoning})`
+            : ''),
+        evidence: finalVisible.slice(-2000),
+        elapsedMs: Date.now() - startedAt,
+      };
+    }
     return {
       outcome: 'timeout',
       summary:
@@ -1556,7 +1594,7 @@ export async function runPlanSkillObservation(opts: {
         (lastJudgeVerdict
           ? ` (last LLM judge: state=${lastJudgeVerdict.state} — ${lastJudgeVerdict.reasoning})`
           : ''),
-      evidence: session.visibleSince(since).slice(-2000),
+      evidence: finalVisible.slice(-2000),
       elapsedMs: Date.now() - startedAt,
     };
   } finally {
