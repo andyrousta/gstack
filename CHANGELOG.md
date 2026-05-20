@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.42.1.1] - 2026-05-20
+## [1.42.2.0] - 2026-05-20
 
 ## **Headed Chromium stops shipping the yellow `--no-sandbox` infobar, and Cmd+Q on the managed window stops triggering the supervisor respawn loop.**
 ## **Two launch-path bugs land together with the missing exit-code wiring that made the second fix actually take effect end-to-end.**
