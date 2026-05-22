@@ -53,6 +53,100 @@ gbrowser's phoenix overlay can hold a headed Chromium window open indefinitely w
 
 - **Cross-model review note**: The eng review's static-assessment pass said "0 issues" in Architecture, Code Quality, and Performance. Codex's plan review then grounded six issues in actual code reads: Bun memoizes dynamic imports (so `await import('../src/server')` doesn't give fresh module state per test), `initRegistry` throws on token-reuse between tests, `shutdown()` is async (sync `.toThrow()` cannot catch the rejection), `cfg.browserManager.onDisconnect` is a public field that callers may set, the original plan missed the SIGTERM site at line 1186, and tests belong in `server-factory.test.ts` not `sidebar-ux.test.ts`. All six were verified against the actual code and incorporated into the shipped plan. The static eng review's blind spot here was runtime/module-cache semantics; the lesson is that "0 issues" from a static pass is a weaker signal than two-model consensus.
 
+## [1.43.2.0] - 2026-05-21
+
+## **Three flagship workflows stop lying to users: /retro detects stale base before fabricating a narrative, /sync-gbrain resumes from gbrain's checkpoint instead of restarting the 35-min import loop, and /review forces every finding to quote the code line that motivates it.**
+## **15 community PRs plus the silent-failure trio land in one bundle: 26 bisect commits with regression tests pinning every fix.**
+
+The post-Daegu wave. v1.42.0.0 closed 23 user-filed bugs two days ago; this wave closes 18 more (15 community PRs + 3 self-filed silent-failure issues) in the same one-PR pattern. The headline change is what stops happening: `/retro` no longer renders a confidently-wrong retro narrative when the date window is wrong, `/sync-gbrain --full` no longer SIGTERMs at exactly 35 minutes with no resume path on big brains, and `/review` no longer ships finding lists where half the items are framework FPs the reviewer never grep'd to confirm.
+
+### The numbers that matter
+
+Source: `git log v1.42.2.0..HEAD --oneline` (26 commits) plus the test sweep across all wave-touched files.
+
+| Surface | Before | After |
+|---|---|---|
+| `/retro` on a Conductor worktree whose `origin/<default>` is days behind the actual remote, OR with a session-context-drift "today" anchor | Silently produces a clean-looking retro from zero or near-zero commits — confidently misses the last 5 days of work. The user only notices when version-bumping for the next PR (#1624) | Step 0.5 pre-flight guard runs four ordered checks: no-remote skip, detached-HEAD skip, fetch-fail warn (offline), and stale-base BLOCK with explicit citation of the latest-commit date. Skip paths surface the disclosure into the retro narrative ("offline run, window not freshness-verified") instead of pretending nothing happened. |
+| `/sync-gbrain --full` on a 2000-file brain | SIGTERMs at hardcoded 35min (exit 143). gbrain leaves `~/.gbrain/import-checkpoint.json` pointing at the staging dir, but the memory-ingest child cleans the dir up on SIGTERM. Every retry restages from scratch and SIGTERMs again forever (#1611) | Bounds-checked env vars: `GSTACK_SYNC_MEMORY_TIMEOUT_MS` and `GSTACK_SYNC_CODE_TIMEOUT_MS` (60_000–86_400_000ms range; bad values warn + default). SIGTERM preserves the staging dir when gbrain has checkpointed it. Next run reads gbrain's own checkpoint and resumes from processedIndex+1. If the staging dir is gone (disk pressure cleanup, OS reboot, user manual cleanup), warn one line and restage from scratch. Reuses gbrain's checkpoint as source of truth — no double-store. |
+| `/review` on a Django + DRF repo | 4 of 8 findings FP — "field doesn't exist on model", "dict.get() might be None", "save() might lose fields", "update_fields might miss X". Each resolvable in <5 min by reading the actual model code, but the reviewer didn't (#1539) | Pre-emit verification gate: every finding requires file:line + verbatim text of the line that motivates it. Unverified findings forced to confidence 4-5, where the existing "<7 → suppress" rule auto-fires. The four named FP classes collapse because they all require quoting code that doesn't actually exist. Framework-meta nudge guides the reviewer to quote Django Meta / Rails associations / SQLAlchemy relationships / TypeORM decorators / Sequelize init / Prisma generated client when the symbol is metaclass-generated. Deeper ORM-aware verification deferred to a future wave (design doc at `~/.gstack-dev/plans/1539-framework-aware-review.md`). |
+| `/sync-gbrain --full` on a freshly-registered code source (0 pages) | Calls `gbrain reindex-code` which only re-embeds existing pages, finds nothing ("No code pages to reindex"), finishes in ~1s, leaves the code index permanently empty while reporting OK | Runs `gbrain sync --strategy code` first (the page-creating walk), then `reindex-code`. Honors the documented "full walk + reindex" contract for both fresh and populated sources. Contributed by @jetsetterfl via PR #1584. |
+| `gbrain doctor` inside a repo with its own `DATABASE_URL` in `.env` | Bun autoloads the project's `.env`; gbrain connects to the wrong DB; classifier reports `broken-db` on otherwise-healthy brains; cached for 60s, poisoning every probe from anywhere | Probe routes through `buildGbrainEnv`, the same helper the sync orchestrator uses. `DATABASE_URL` is seeded from `~/.gbrain/config.json`. Result is cwd-independent — the 60s cache can no longer propagate a poisoned negative to clean directories. Contributed by @jetsetterfl via PR #1583. |
+| `/sync-gbrain` against a Supabase PgBouncer transaction-mode pooler | Sync fails with prepared-statement errors mid-stream; PgBouncer transaction mode doesn't support session-level prepared statements | Detects the transaction-mode pooler and sets `GBRAIN_PREPARE=true` so gbrain falls back to compatible statement handling. Closes #1435. Contributed by @mikeangstadt via PR #1591. |
+| Newly-provisioned Supabase project's DATABASE_URL from `supabase projects api` | Returns the transaction-mode pooler URL (port 6543); gbrain sync fails with "prepared statement does not exist" | Rewrites to the session-mode pooler URL (port 5432) for new projects. Closes #1301. Contributed by @0xDevNinja via PR #1582. |
+| `bun run benchmark prompt.txt --models claude` | argv parser treats `claude` as the positional prompt and `prompt.txt` as a flag value, silently runs benchmarks on the wrong model | Flag values and positional prompts parsed in the right order. Closes #1603. Contributed by @jbetala7 via PR #1604. |
+| `gstack-config get explain_level` | Returns empty — the key wasn't in the defaults table, so every preamble that read it fell into the writing-style default branch even when the user had set terse | Returns `default`, shows up in `gstack-config list` and `gstack-config defaults`. Closes #1607. Contributed by @jbetala7 via PR #1608. |
+| `gstack-learnings-search --cross-project` from inside a project | Cross-project search hid current-project learnings — the find filter excluded `*/$SLUG/*` and the bash branch never restored them | Current-project entries explicitly tagged `current\t<line>` and merged with cross-project entries tagged `cross\t<line>` before the bun block parses them. Closes #1618. Contributed by @jbetala7 via PR #1619. |
+| `gh pr merge` exits non-zero in `/land-and-deploy` | Skill stops, deploy never runs — but the PR may already be MERGED server-side (concurrent merge, or local cleanup phase failed after the merge succeeded) | New §4a-postfail check queries `gh pr view --json state,mergeCommit` after any non-zero exit. MERGED → record merge SHA, offer non-destructive worktree cleanup with uncommitted-work guard, continue to §4a CI watch. OPEN → probe `autoMergeRequest`. CLOSED → STOP. Hard rule: never retry `gh pr merge`. Original diff by @davidfoy via PR #1620, re-authored into the `.tmpl` so the next `gen:skill-docs` doesn't overwrite the fix. |
+| `gstack-config` slash command in Claude Code | `/gstack` returned "Unknown command" because the root SKILL.md had `name: gstack` but no slash alias registered | Setup registers a `_gstack-command` Claude wrapper pointing at the root SKILL.md, preserving `name: gstack` for discovery. Survives `gstack-relink` after `skill_prefix` flips. Closes #1543. Contributed by @jbetala7 via PR #1577. |
+| `bun run scan-secrets` on Windows | `command -v gitleaks` not available in `cmd.exe` PATH — probe treats gitleaks as missing even when it's installed | Probes via `execFileSync('gitleaks', ['--version'])` instead of `command -v`. Closes #1545. Contributed by @jbetala7 via PR #1546. |
+| `gstack-artifacts-url` accepting `github.com` or `garrytan` as a repository | Validator passed host-only or owner-only inputs as repos; downstream code emitted broken URLs | Rejects with a clear error when the path component isn't `<owner>/<repo>`. Closes #1597. Contributed by @jbetala7 via PR #1598. |
+| `/qa` on Ubuntu with AppArmor blocking unprivileged Chromium sandboxing | `/qa` hangs at launch — kernel denies the unprivileged user namespaces Chromium needs, even for normal users | `GSTACK_CHROMIUM_NO_SANDBOX=1` opt-in env override forces the sandbox off without changing the default for everyone else. Headed-launch sandbox-on-Linux-dev behavior from v1.42.2.0 preserved. Original diff by @techcenter68 via PR #1562, rebased onto the `shouldEnableChromiumSandbox()` helper that landed in v1.42.2.0. |
+| `gstack browse` server inside Claude Code's per-command Bash sandbox, Conductor, or CI step runners | `Bun.spawn().unref()` removes the child from Bun's event loop but doesn't call `setsid()`. The session leader's exit SIGHUPs every PID in the session — the browse server (and its Chromium grandchildren) die before the next command runs | macOS/Linux spawn routes through Node's `child_process.spawn` with `detached:true`, which calls `setsid()`. Server becomes its own session leader (PPID=1) and survives the spawning shell's exit. Windows path unchanged (was already correct via Node-via-Bun launcher). Contributed by @bharat2913 via PR #1612. |
+| `GSTACK_CHROMIUM_PATH` pointing at a custom Chromium build, headless launch | Custom-build path didn't apply to headless `launch()`, only headed `launchPersistentContext()`. Headless callers fell back to the bundled Chromium | `isCustomChromium()` guard mirrored to the headless launch path. Custom Chromium honored everywhere. Contributed by @shohu via PR #1614. |
+| `$D design generate` on a slow OpenAI response | Default 60s timeout times out before gpt-image-1 finishes the larger generations | Bumped to 240s and pinned `gpt-image-2` (which is markedly faster than `gpt-image-1` for the same quality). Closes #1519. Contributed by @matteo-hertel via PR #1586. |
+| `bin/gstack-gbrain-lib.sh` `_gstack_gbrain_validate_varname` on macOS shells | Default locale (en_US.UTF-8) makes `case [A-Z_]` glob brackets match lowercase letters too — `lower_case` passes validation, then trips `printf -v "$varname"` with "not a valid identifier" the caller can't distinguish from other failures | `local LC_ALL=C` pin gives ASCII-only bracket semantics on macOS and Linux. Plus `local` scoping so the pin doesn't mutate the caller's locale. Contributed by @andrey-esipov via PR #1606. |
+
+### Coverage
+
+Three new regression test files for the silent-failure trio, plus three coverage-gap tests for community PRs without their own coverage, plus one schema-regression update and one golden-baseline refresh:
+
+- `test/regression-1624-retro-stale-base.test.ts` — 13 static invariants pinning all four pre-check branches + ordering + disclosure-to-narrative
+- `test/regression-1611-gbrain-sync-resume.test.ts` — 19 tests: 10 on `resolveStageTimeoutMs` (bounds, non-numeric, ranges), 6 on `decideResume` (no checkpoint, corrupt JSON, staging present/missing, dir-less checkpoint), 3 static invariants on SIGTERM preservation order
+- `test/regression-1539-review-self-verify.test.ts` — 12 tests: resolver text + all four named FP classes + framework-meta nudge + deferred-design-doc reference + propagation to all four downstream SKILL.md consumers + existing confidence rule unchanged
+- `test/gbrain-lib-validate-varname.test.ts` — 8 tests: uppercase/digit/underscore accepted, lowercase rejected (the macOS-locale FP), mixed-case rejected, LC_ALL=C scoping local
+- `browse/test/cli-setsid-daemonize.test.ts` — 4 static invariants: nodeSpawn imported, non-Windows uses nodeSpawn with detached:true + unref, comment documents setsid/SIGHUP, no Bun.spawn on macOS/Linux
+- `test/land-and-deploy-postfail.test.ts` — 12 tests: §4a-postfail present, ordering before §4a, gh upstream bug refs, all three state branches, merge-SHA capture, non-destructive worktree cleanup, hard "never retry" rule, atomic regen propagation
+- `test/gstack-gbrain-detect-mcp-mode.test.ts` — schema regression updated for new `gbrain_pooler_mode` key from PR #1591
+- `test/fixtures/golden/{claude,codex,factory}-ship-SKILL.md` — regenerated to match the verification-gate text now baked into ship/SKILL.md via the resolver pipeline
+- `test/learnings-injection.test.ts` — aligned with PR #1619's tagged-line shape (SLUG env var no longer needed inside bun block)
+
+Every wave-touched test file passes in isolation. Cross-file pollution in `bun test` full-suite mode remains pre-existing and is documented (v1.42.0.0 CHANGELOG).
+
+### What this means for builders
+
+If you run `/retro` on a Conductor branch that's been around for a few days, the skill no longer fabricates a confident retro narrative against a stale window — it tells you the window is stale and asks you to verify today's date or re-fetch. If you sync a big brain (~2000+ files), interrupted runs resume from `processedIndex+1` on the next `/sync-gbrain` instead of restaging from scratch every time. If you use `/review` on a Django/Rails/SQLAlchemy/TypeORM/Sequelize/Prisma repo, framework-shape false positives drop because the reviewer is forced to quote the line that motivates each finding before it lands in the report. If you're on Ubuntu/AppArmor, `GSTACK_CHROMIUM_NO_SANDBOX=1` unblocks `/qa`. If you run gstack inside Claude Code's per-command sandbox or Conductor's worktree harnesses, the browse server survives the spawning shell's exit via setsid. Pull and run `/gstack-upgrade`; no migration needed.
+
+### Itemized changes
+
+#### Added
+
+- `scripts/resolvers/confidence.ts` (extended) — Pre-emit verification gate consumed by review, cso, plan-eng-review, and ship via the preamble pipeline. Reuses the existing `confidence < 7 → suppress` rule rather than inventing new mechanism.
+- `bin/gstack-gbrain-sync.ts` (new exports: `resolveStageTimeoutMs`, `readGbrainCheckpoint`, `decideResume`) — env-driven timeouts with bounds (60_000-86_400_000ms); resume detection that reuses gbrain's own `~/.gbrain/import-checkpoint.json` as the source of truth.
+- `bin/gstack-memory-ingest.ts` (new private: `stagingDirIsCheckpointed`) — SIGTERM handler now preserves the staging dir when gbrain has written a checkpoint pointing at it. Honors `GSTACK_INGEST_RESUME_DIR` so the orchestrator can hand the child an existing staging dir to resume against.
+- `retro/SKILL.md.tmpl` (new Step 0.5) — stale-base + bad-today-anchor pre-flight guard. Four ordered pre-check branches.
+- `land-and-deploy/SKILL.md.tmpl` (new §4a-postfail) — Post-failure PR-state check; never retries `gh pr merge` after non-zero exit.
+- `browse/src/browser-manager.ts` (extended `shouldEnableChromiumSandbox`) — `GSTACK_CHROMIUM_NO_SANDBOX=1` opt-in override.
+- Six new regression test files plus three coverage-gap tests (see Coverage above).
+
+#### Changed
+
+- `bin/gstack-gbrain-sync.ts:runCodeImport` — `--full` now runs `sync --strategy code` (the page-creating walk) before `reindex-code` (re-embed only). Honors the "full walk + reindex" contract for both fresh and populated sources. Contributed by @jetsetterfl via PR #1584.
+- `lib/gbrain-local-status.ts:freshClassify` — probe env routes through `buildGbrainEnv` so `DATABASE_URL` is seeded from `~/.gbrain/config.json` and the result is cwd-independent. Contributed by @jetsetterfl via PR #1583.
+- `bin/gstack-gbrain-detect`, `lib/gbrain-exec.ts`, `sync-gbrain/SKILL.md.tmpl` — PgBouncer transaction-mode pooler detection sets `GBRAIN_PREPARE=true`. Contributed by @mikeangstadt via PR #1591.
+- `bin/gstack-gbrain-supabase-provision` — rewrites transaction-mode pooler URL (port 6543) to session-mode (port 5432) for newly-provisioned Supabase projects. Contributed by @0xDevNinja via PR #1582.
+- `bin/gstack-config` — `explain_level` exposed in defaults table and active values list. Contributed by @jbetala7 via PR #1608.
+- `bin/gstack-model-benchmark` — argv parsing routes flag values and positional prompts correctly. Contributed by @jbetala7 via PR #1604.
+- `bin/gstack-artifacts-url` — rejects host-only or owner-only remotes. Contributed by @jbetala7 via PR #1598.
+- `bin/gstack-learnings-search` — cross-project search tags rows inline (`current\t<line>` vs `cross\t<line>`) so current-project entries are never hidden. Contributed by @jbetala7 via PR #1619.
+- `setup`, `bin/gstack-relink` — root `gstack` slash command alias registered via `_gstack-command` wrapper. Contributed by @jbetala7 via PR #1577.
+- `lib/gstack-memory-helpers.ts` — gitleaks probe via `execFileSync('gitleaks', ['--version'])` instead of `command -v`. Works on Windows `cmd.exe`. Contributed by @jbetala7 via PR #1546.
+- `bin/gstack-gbrain-lib.sh:_gstack_gbrain_validate_varname` — `local LC_ALL=C` pin gives ASCII-only bracket semantics on macOS shells. Contributed by @andrey-esipov via PR #1606.
+- `browse/src/cli.ts` — macOS/Linux daemonize routes through `nodeSpawn(...)` with `detached:true` (calls `setsid()`). Contributed by @bharat2913 via PR #1612.
+- `browse/src/browser-manager.ts` — `isCustomChromium()` guard mirrored to headless launch. Contributed by @shohu via PR #1614.
+- `design/src/{evolve,generate,iterate,variants}.ts` — image-gen timeout bumped to 240s; pinned `gpt-image-2`. Contributed by @matteo-hertel via PR #1586.
+
+#### Fixed
+
+- `/retro` silent confidently-wrong output when `today` anchor drifts or `origin/<default>` is stale (#1624). Closed by Step 0.5 pre-flight guard.
+- `/sync-gbrain --full` SIGTERM at hardcoded 35min, no resume from gbrain's checkpoint (#1611). Closed by env-driven timeouts + checkpoint-reuse + SIGTERM staging preservation.
+- `/review` 50% FP rate on Django/Rails/SQLAlchemy repos when the FP class is "field/method doesn't exist on model" (#1539). Closed by pre-emit verification gate forcing every finding to quote the motivating line.
+
+#### For contributors
+
+- Defer-doc artifact `~/.gstack-dev/plans/1539-framework-aware-review.md` describes the multi-week framework-aware ORM verification extension (Django/Rails/SQLAlchemy detection, model-introspection helpers, migration-history-aware checks) intentionally deferred from this wave. Promote to active plan when v1.43.0.0 ships and a second high-volume FP report lands on a different framework, or a follow-up retro shows the lighter quoted-line gate doesn't deliver measurable FP reduction.
+- Wave shape preserved from Daegu pattern: ONE bundled PR with bisect commits, atomic squashed commits for `.tmpl` edit + `gen:skill-docs` regen pairs, intermediate verification checkpoints, original contributors credited in commit author + footer. See `[[feedback_one_pr_fix_waves]]` in agent memory.
+
+
 ## [1.43.1.0] - 2026-05-21
 
 ## **Local gbrain PGLite now defaults to Voyage's code-specialized embedding model when `VOYAGE_API_KEY` is set.**
