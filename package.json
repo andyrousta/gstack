@@ -65,7 +65,13 @@
       "src/**/*.ts",
       "!src/**/*.d.ts",
       "!src/evals/**"
-    ]
+    ],
+    "coverageThreshold": {
+      "global": {
+        "lines": 70,
+        "functions": 70
+      }
+    }
   },
   "engines": {
     "node": ">=18.0.0"
