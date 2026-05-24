@@ -22,7 +22,9 @@
     // personal: makes debugging easier during development
     "pretty": true,
     // personal: helps catch accidental any usage while learning the codebase
-    "noImplicitAny": true
+    "noImplicitAny": true,
+    // personal: surface more potential issues while exploring unfamiliar code paths
+    "noUncheckedIndexedAccess": true
   },
   "include": ["src/**/*"],
   // also exclude test helpers/fixtures from compilation
