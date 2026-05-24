@@ -20,7 +20,9 @@
     "noFallthroughCasesInSwitch": true,
     "exactOptionalPropertyTypes": true,
     // personal: makes debugging easier during development
-    "pretty": true
+    "pretty": true,
+    // personal: helps catch accidental any usage while learning the codebase
+    "noImplicitAny": true
   },
   "include": ["src/**/*"],
   // also exclude test helpers/fixtures from compilation
