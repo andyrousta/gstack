@@ -18,8 +18,11 @@
     "noUnusedParameters": true,
     "noImplicitReturns": true,
     "noFallthroughCasesInSwitch": true,
-    "exactOptionalPropertyTypes": true
+    "exactOptionalPropertyTypes": true,
+    // personal: makes debugging easier during development
+    "pretty": true
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "**/*.test.ts", "**/*.spec.ts"]
+  // also exclude test helpers/fixtures from compilation
+  "exclude": ["node_modules", "dist", "**/*.test.ts", "**/*.spec.ts", "**/__fixtures__/**"]
 }
